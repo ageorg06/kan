@@ -1,0 +1,19 @@
+{
+  "name": "@kan/mcp",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/index.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "pg": "^8.11.3",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@kan/tsconfig": "workspace:*",
+    "tsx": "^4.19.0",
+    "typescript": "catalog:"
+  }
+}

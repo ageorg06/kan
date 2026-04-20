@@ -1,5 +1,14 @@
 # AGENTS.md
 
+## MCP Tools
+
+Before modifying schema, routes, or domain logic, use the `kan` MCP tools:
+
+- `kan_get_schema` — list all tables or get a specific table's Drizzle definition
+- `kan_get_routes` — list all tRPC routers or get a specific router's implementation
+- `kan_get_package_map` — understand the monorepo structure and dependencies
+- `kan_get_conventions` — get domain rules (soft-delete, public-id, index-management, etc.)
+
 ## Project Overview
 
 Kan is an open-source project management tool (Trello alternative) built with:

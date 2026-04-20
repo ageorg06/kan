@@ -103,6 +103,21 @@ services:
       migrator:
         condition: service_completed_successfully
 
+  mcp:
+    image: ghcr.io/kanbn/kan-mcp:latest
+    container_name: ${MCP_CONTAINER_NAME:-kan-mcp}
+    ports:
+      - "${MCP_PORT:-3100}:3100"
+    networks:
+      - dokploy-network
+    build:
+      context: ..
+      dockerfile: packages/mcp/Dockerfile
+    environment:
+      - MCP_PORT=3100
+      - MCP_AUTH_TOKEN=${MCP_AUTH_TOKEN}
+    restart: unless-stopped
+
 networks:
   dokploy-network:
     external: true

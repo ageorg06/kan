@@ -131,6 +131,21 @@ services:
         condition: service_completed_successfully
     restart: unless-stopped
 
+  mcp:
+    image: ghcr.io/kanbn/kan-mcp:latest
+    container_name: ${CONTAINER_NAME:-kan-mcp}
+    ports:
+      - "${MCP_PORT:-3100}:3100"
+    networks:
+      - kan-network
+    build:
+      context: .
+      dockerfile: ./packages/mcp/Dockerfile
+    environment:
+      - MCP_PORT=3100
+      - MCP_AUTH_TOKEN=${MCP_AUTH_TOKEN}
+    restart: unless-stopped
+
   postgres:
     image: postgres:15
     container_name: kan-db
