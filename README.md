@@ -217,6 +217,84 @@ pnpm dev
 
 See `.env.example` for a complete list of supported environment variables.
 
+## MCP Server 🤖
+
+Kan includes an MCP (Model Context Protocol) server that exposes codebase structure to AI coding agents. This helps AI assistants understand the database schema, API routes, and coding conventions when working on the project.
+
+### Available Tools
+
+- `get_schema` — List all database tables or get a specific table's Drizzle ORM definition
+- `get_routes` — List all tRPC routers or get a specific router's implementation
+- `get_package_map` — Understand the monorepo structure and internal dependencies
+- `get_conventions` — Get coding conventions and domain rules (soft-delete, public-id, index-management, etc.)
+
+### Local Development
+
+1. Install dependencies:
+```bash
+pnpm install
+```
+
+2. Add to your AI agent's MCP config. For example, for Claude Code:
+```json
+{
+  "mcpServers": {
+    "kan": {
+      "command": "npx",
+      "args": ["tsx", "packages/mcp/src/index.ts"]
+    }
+  }
+}
+```
+
+Or for Hermes:
+```yaml
+mcp_servers:
+  kan:
+    command: "npx"
+    args: ["tsx", "~/Dev/kan/packages/mcp/src/index.ts"]
+    timeout: 120
+```
+
+### Cloud Deployment
+
+The MCP server can also be deployed as an HTTP service:
+
+1. Set environment variables:
+```bash
+MCP_PORT=3100
+MCP_AUTH_TOKEN=your-secret-token
+```
+
+2. Build and run:
+```bash
+npx tsx packages/mcp/src/index.ts
+```
+
+Or use Docker Compose (already configured in `docker-compose.yml`):
+```bash
+docker-compose up -d mcp
+```
+
+3. Connect your AI agent using the HTTP endpoint:
+```json
+{
+  "mcpServers": {
+    "kan": {
+      "type": "http",
+      "url": "https://your-mcp-host.com/mcp",
+      "headers": {
+        "Authorization": "Bearer your-secret-token"
+      }
+    }
+  }
+}
+```
+
+### Live Database Access (Optional)
+
+Set `POSTGRES_URL` environment variable to enable the MCP server to query your live database for additional insights.
+
 ## Contributing 🤝
 
 We welcome contributions! Please read our [contribution guidelines](CONTRIBUTING.md) before submitting a pull request.
