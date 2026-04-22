@@ -46,7 +46,7 @@ COPY --from=pruner /app/out/pnpm-workspace.yaml ./pnpm-workspace.yaml
 COPY --from=pruner /app/out/json/ .
 
 ENV CI=true
-RUN --mount=type=cache,id=pnpm,target=~/.pnpm-store pnpm install --frozen-lockfile
+RUN --mount=type=cache,id=pnpm-store,target=~/.pnpm-store pnpm install --frozen-lockfile
 
 # ============================================
 # Stage 4: Build the web application
