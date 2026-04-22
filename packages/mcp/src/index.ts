@@ -1582,6 +1582,137 @@ Permission overrides: workspace_member_permissions per-member overrides`,
         return text(`Removed **${memberName}** from card ${cardId}.`);
       },
     );
+
+    // ---- Epics (parent/child cards) ----------------------------------------
+
+    server.tool(
+      "set_parent",
+      "Set a card's parent (epic). Pass null parentId to remove.",
+      {
+        cardId: z.string().describe("Child card publicId"),
+        parentId: z
+          .string()
+          .nullable()
+          .describe("Parent card publicId, or null to remove"),
+      },
+      async ({ cardId, parentId }) => {
+        const cardRes = await query(
+          `SELECT id, title FROM card WHERE "publicId" = $1 AND "deletedAt" IS NULL`,
+          [cardId],
+        );
+        if (cardRes.rows.length === 0) return text(`Card "${cardId}" not found.`);
+        const card = cardRes.rows[0];
+
+        if (parentId === null) {
+          await query(
+            `UPDATE card SET "parentId" = NULL, "updatedAt" = NOW() WHERE id = $1`,
+            [card.id],
+          );
+          return text(`Removed parent from card **${card.title}**.`);
+        }
+
+        const parentRes = await query(
+          `SELECT id, title FROM card WHERE "publicId" = $1 AND "deletedAt" IS NULL`,
+          [parentId],
+        );
+        if (parentRes.rows.length === 0)
+          return text(`Parent card "${parentId}" not found.`);
+        const parent = parentRes.rows[0];
+
+        if (parent.id === card.id)
+          return text("A card cannot be its own parent.");
+
+        await query(
+          `UPDATE card SET "parentId" = $1, "updatedAt" = NOW() WHERE id = $2`,
+          [parent.id, card.id],
+        );
+
+        return text(
+          `Set **${parent.title}** as parent of **${card.title}**.`,
+        );
+      },
+    );
+
+    server.tool(
+      "list_epics",
+      "List all epics (cards with children) in a board.",
+      {
+        workspace: z.string().describe("Workspace slug"),
+        board: z.string().describe("Board slug"),
+      },
+      async ({ workspace, board }) => {
+        const result = await query(
+          `
+          SELECT DISTINCT p."publicId", p.title, p."dueDate",
+            l.name AS list_name,
+            (SELECT count(*) FROM card c2 WHERE c2."parentId" = p.id AND c2."deletedAt" IS NULL) AS total,
+            (SELECT count(*) FROM card c3
+              JOIN list l2 ON c3."listId" = l2.id
+              WHERE c3."parentId" = p.id AND c3."deletedAt" IS NULL
+              AND l2.name ILIKE '%done%') AS done
+          FROM card p
+          JOIN list l ON p."listId" = l.id
+          JOIN board b ON l."boardId" = b.id
+          JOIN workspace w ON b."workspaceId" = w.id
+          WHERE w.slug = $1 AND b.slug = $2
+            AND p."deletedAt" IS NULL AND l."deletedAt" IS NULL
+            AND EXISTS (SELECT 1 FROM card c WHERE c."parentId" = p.id AND c."deletedAt" IS NULL)
+          ORDER BY p.title
+        `,
+          [workspace, board],
+        );
+
+        const lines = [`# Epics in /${workspace}/${board}\n`];
+        for (const row of result.rows) {
+          const due = row.dueDate
+            ? ` | due: ${new Date(row.dueDate).toLocaleDateString()}`
+            : "";
+          lines.push(
+            `- **${row.title}** (${row.publicId}) — ${row.done}/${row.total} done, list: ${row.list_name}${due}`,
+          );
+        }
+        return text(lines.join("\n") || "No epics found.");
+      },
+    );
+
+    server.tool(
+      "list_children",
+      "List child cards of an epic (parent card).",
+      {
+        parentId: z.string().describe("Parent card publicId"),
+      },
+      async ({ parentId }) => {
+        const parentRes = await query(
+          `SELECT id, title FROM card WHERE "publicId" = $1 AND "deletedAt" IS NULL`,
+          [parentId],
+        );
+        if (parentRes.rows.length === 0)
+          return text(`Card "${parentId}" not found.`);
+        const parent = parentRes.rows[0];
+
+        const result = await query(
+          `
+          SELECT c."publicId", c.title, c.index, c."dueDate", l.name AS list_name
+          FROM card c
+          JOIN list l ON c."listId" = l.id
+          WHERE c."parentId" = $1 AND c."deletedAt" IS NULL
+          ORDER BY l.index, c.index
+        `,
+          [parent.id],
+        );
+
+        const lines = [`# Children of **${parent.title}** (${parentId})\n`];
+        for (const row of result.rows) {
+          const due = row.dueDate
+            ? ` | due: ${new Date(row.dueDate).toLocaleDateString()}`
+            : "";
+          lines.push(
+            `- **${row.title}** (${row.publicId}) — ${row.list_name}${due}`,
+          );
+        }
+        return text(lines.join("\n") || "No children found.");
+      },
+    );
   } // end if POSTGRES_URL
 } // end registerTools
 
