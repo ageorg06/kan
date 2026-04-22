@@ -256,6 +256,12 @@ export const getByPublicId = async (
               dueDate: true,
             },
             with: {
+              parent: {
+                columns: {
+                  publicId: true,
+                  title: true,
+                },
+              },
               labels: {
                 with: {
                   label: {
@@ -450,6 +456,12 @@ export const getBySlug = async (
               dueDate: true,
             },
             with: {
+              parent: {
+                columns: {
+                  publicId: true,
+                  title: true,
+                },
+              },
               labels: {
                 with: {
                   label: {
