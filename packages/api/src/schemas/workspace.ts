@@ -10,7 +10,7 @@ export const workspaceListItemSchema = z.object({
     name: z.string(),
     description: z.string().nullable(),
     slug: z.string(),
-    plan: z.enum(["free", "pro", "enterprise"]),
+    plan: z.enum(["free", "team", "pro", "enterprise"]),
     weekStartDay: z.number().nullable(),
     deletedAt: z.date().nullable(),
   }),
@@ -72,7 +72,7 @@ export const workspaceCreateResponseSchema = z.object({
   name: z.string(),
   slug: z.string(),
   description: z.string().nullable(),
-  plan: z.enum(["free", "pro", "enterprise"]),
+  plan: z.enum(["free", "team", "pro", "enterprise"]),
 });
 
 // ─── workspace.update ────────────────────────────────────────
@@ -81,7 +81,7 @@ export const workspaceUpdateResponseSchema = z.object({
   name: z.string(),
   slug: z.string(),
   description: z.string().nullable(),
-  plan: z.enum(["free", "pro", "enterprise"]),
+  plan: z.enum(["free", "team", "pro", "enterprise"]),
   showEmailsToMembers: z.boolean().nullable(),
   weekStartDay: z.number().nullable(),
 });
