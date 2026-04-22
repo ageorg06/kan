@@ -1466,10 +1466,120 @@ Permission overrides: workspace_member_permissions per-member overrides`,
         const lines = [`# Members of /${workspace}\n`];
         for (const row of result.rows) {
           lines.push(
-            `- **${row.name}** (${row.email}) — ${row.role}, ${row.status}`,
+            `- **${row.name}** (${row.email}) — ${row.role}, ${row.status}, id: ${row.publicId}`,
           );
         }
         return text(lines.join("\n") || "No members found.");
+      },
+    );
+
+    server.tool(
+      "assign_member",
+      "Assign a workspace member to a card.",
+      {
+        cardId: z.string().describe("Card publicId"),
+        memberId: z
+          .string()
+          .describe(
+            "Workspace member publicId (from list_members)",
+          ),
+      },
+      async ({ cardId, memberId }) => {
+        const cardRes = await query(
+          `SELECT id FROM card WHERE "publicId" = $1 AND "deletedAt" IS NULL`,
+          [cardId],
+        );
+        if (cardRes.rows.length === 0)
+          return text(`Card "${cardId}" not found.`);
+        const cId = cardRes.rows[0].id;
+
+        const memberRes = await query(
+          `SELECT wm.id, u.name FROM workspace_members wm
+           JOIN "user" u ON wm."userId" = u.id
+           WHERE wm."publicId" = $1 AND wm."deletedAt" IS NULL`,
+          [memberId],
+        );
+        if (memberRes.rows.length === 0)
+          return text(`Member "${memberId}" not found.`);
+        const wmId = memberRes.rows[0].id;
+        const memberName = memberRes.rows[0].name;
+
+        // Check if already assigned
+        const existing = await query(
+          `SELECT 1 FROM "_card_workspace_members" WHERE "cardId" = $1 AND "workspaceMemberId" = $2`,
+          [cId, wmId],
+        );
+        if (existing.rows.length > 0)
+          return text(
+            `**${memberName}** is already assigned to card ${cardId}.`,
+          );
+
+        await query(
+          `INSERT INTO "_card_workspace_members" ("cardId", "workspaceMemberId") VALUES ($1, $2)`,
+          [cId, wmId],
+        );
+
+        // Activity record
+        const actPubId = generatePublicId();
+        await query(
+          `INSERT INTO card_activity ("publicId", type, "cardId", "workspaceMemberId", "createdAt")
+           VALUES ($1, 'card.updated.member.added', $2, $3, NOW())`,
+          [actPubId, cId, wmId],
+        );
+
+        return text(`Assigned **${memberName}** to card ${cardId}.`);
+      },
+    );
+
+    server.tool(
+      "unassign_member",
+      "Remove a workspace member from a card.",
+      {
+        cardId: z.string().describe("Card publicId"),
+        memberId: z
+          .string()
+          .describe(
+            "Workspace member publicId (from list_members)",
+          ),
+      },
+      async ({ cardId, memberId }) => {
+        const cardRes = await query(
+          `SELECT id FROM card WHERE "publicId" = $1 AND "deletedAt" IS NULL`,
+          [cardId],
+        );
+        if (cardRes.rows.length === 0)
+          return text(`Card "${cardId}" not found.`);
+        const cId = cardRes.rows[0].id;
+
+        const memberRes = await query(
+          `SELECT wm.id, u.name FROM workspace_members wm
+           JOIN "user" u ON wm."userId" = u.id
+           WHERE wm."publicId" = $1 AND wm."deletedAt" IS NULL`,
+          [memberId],
+        );
+        if (memberRes.rows.length === 0)
+          return text(`Member "${memberId}" not found.`);
+        const wmId = memberRes.rows[0].id;
+        const memberName = memberRes.rows[0].name;
+
+        const del = await query(
+          `DELETE FROM "_card_workspace_members" WHERE "cardId" = $1 AND "workspaceMemberId" = $2`,
+          [cId, wmId],
+        );
+        if (del.rowCount === 0)
+          return text(
+            `**${memberName}** is not assigned to card ${cardId}.`,
+          );
+
+        // Activity record
+        const actPubId = generatePublicId();
+        await query(
+          `INSERT INTO card_activity ("publicId", type, "cardId", "workspaceMemberId", "createdAt")
+           VALUES ($1, 'card.updated.member.removed', $2, $3, NOW())`,
+          [actPubId, cId, wmId],
+        );
+
+        return text(`Removed **${memberName}** from card ${cardId}.`);
       },
     );
   } // end if POSTGRES_URL
