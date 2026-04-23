@@ -232,6 +232,13 @@
       "when": 1776852884243,
       "tag": "20260422101444_add-parent-id-to-card",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1776938697634,
+      "tag": "20260423100457_AddIsHiddenToList",
+      "breakpoints": true
     }
   ]
 }

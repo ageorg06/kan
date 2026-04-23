@@ -240,7 +240,8 @@ export const getWithCardsByPublicId = async (
 export const update = async (
   db: dbClient,
   listInput: {
-    name: string;
+    name?: string;
+    isHidden?: boolean;
   },
   args: {
     listPublicId: string;
@@ -248,7 +249,7 @@ export const update = async (
 ) => {
   const [result] = await db
     .update(lists)
-    .set({ name: listInput.name })
+    .set(listInput)
     .where(and(eq(lists.publicId, args.listPublicId), isNull(lists.deletedAt)))
     .returning({
       publicId: lists.publicId,

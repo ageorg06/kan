@@ -9,6 +9,8 @@ import { useEffect, useState } from "react";
 import { DragDropContext, Draggable } from "react-beautiful-dnd";
 import { useForm } from "react-hook-form";
 import {
+  HiOutlineEye,
+  HiOutlineEyeSlash,
   HiOutlinePlusSmall,
   HiOutlineRectangleStack,
   HiOutlineSquare3Stack3D,
@@ -127,6 +129,8 @@ export default function BoardPage({ isTemplate }: { isTemplate?: boolean }) {
 
   const boardType: "regular" | "template" = isTemplate ? "template" : "regular";
 
+  const includeHidden = router.query.includeHidden === "1";
+
   const queryParams = {
     boardPublicId: boardId ?? "",
     members: formatToArray(router.query.members),
@@ -136,6 +140,7 @@ export default function BoardPage({ isTemplate }: { isTemplate?: boolean }) {
       dueDateFilters: semanticFilters,
     }),
     type: boardType,
+    includeHidden,
   };
 
   const {
@@ -597,6 +602,38 @@ export default function BoardPage({ isTemplate }: { isTemplate?: boolean }) {
                     isLoading={!boardData}
                   />
                 )}
+                {boardData &&
+                  (boardData.allLists.some((l) => l.isHidden) ||
+                    includeHidden) && (
+                    <Tooltip
+                      content={
+                        includeHidden
+                          ? t`Hide planning lists`
+                          : t`Show hidden lists`
+                      }
+                    >
+                      <Button
+                        variant="secondary"
+                        iconLeft={
+                          includeHidden ? (
+                            <HiOutlineEye />
+                          ) : (
+                            <HiOutlineEyeSlash />
+                          )
+                        }
+                        onClick={async () => {
+                          const { includeHidden: _drop, ...rest } =
+                            router.query;
+                          await router.push({
+                            pathname: router.pathname,
+                            query: includeHidden
+                              ? rest
+                              : { ...rest, includeHidden: "1" },
+                          });
+                        }}
+                      />
+                    </Tooltip>
+                  )}
               </>
             )}
             <Tooltip

@@ -109,6 +109,7 @@ export const boardRouter = createTRPCRouter({
           )
           .optional(),
         type: z.enum(["regular", "template"]).optional(),
+        includeHidden: z.boolean().optional(),
       }),
     )
     .output(boardDetailSchema)
@@ -149,6 +150,7 @@ export const boardRouter = createTRPCRouter({
           lists: input.lists ?? [],
           dueDate: dueDateFilters,
           type: input.type,
+          includeHidden: input.includeHidden ?? false,
         },
       );
 
