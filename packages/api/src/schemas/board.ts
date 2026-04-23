@@ -71,6 +71,7 @@ export const boardDetailSchema = z.object({
       publicId: z.string(),
       name: z.string(),
       index: z.number(),
+      isHidden: z.boolean(),
       cards: z.array(boardDetailCardSchema),
     }),
   ),
@@ -78,6 +79,7 @@ export const boardDetailSchema = z.object({
     z.object({
       publicId: z.string(),
       name: z.string(),
+      isHidden: z.boolean(),
     }),
   ),
 });

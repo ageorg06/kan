@@ -154,6 +154,7 @@ export const getByPublicId = async (
     lists: string[];
     dueDate: DueDateFilter[];
     type: "regular" | "template" | undefined;
+    includeHidden?: boolean;
   },
 ) => {
   let cardIds: string[] = [];
@@ -244,6 +245,7 @@ export const getByPublicId = async (
           name: true,
           boardId: true,
           index: true,
+          isHidden: true,
         },
         with: {
           cards: {
@@ -342,6 +344,7 @@ export const getByPublicId = async (
           filters.lists.length > 0
             ? inArray(lists.publicId, filters.lists)
             : undefined,
+          filters.includeHidden ? undefined : eq(lists.isHidden, false),
         ),
         orderBy: [asc(lists.index)],
       },
@@ -349,6 +352,7 @@ export const getByPublicId = async (
         columns: {
           publicId: true,
           name: true,
+          isHidden: true,
         },
         where: isNull(lists.deletedAt),
         orderBy: [asc(lists.index)],
@@ -522,6 +526,7 @@ export const getBySlug = async (
           filters.lists.length > 0
             ? inArray(lists.publicId, filters.lists)
             : undefined,
+          eq(lists.isHidden, false),
         ),
         orderBy: [asc(lists.index)],
       },
@@ -530,7 +535,7 @@ export const getBySlug = async (
           publicId: true,
           name: true,
         },
-        where: isNull(lists.deletedAt),
+        where: and(isNull(lists.deletedAt), eq(lists.isHidden, false)),
         orderBy: [asc(lists.index)],
       },
     },

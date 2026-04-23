@@ -4,6 +4,8 @@ import { Draggable } from "react-beautiful-dnd";
 import { useForm } from "react-hook-form";
 import {
   HiEllipsisHorizontal,
+  HiOutlineEye,
+  HiOutlineEyeSlash,
   HiOutlinePlusSmall,
   HiOutlineSquaresPlus,
   HiOutlineTrash,
@@ -28,6 +30,7 @@ interface List {
   publicId: string;
   name: string;
   createdBy?: string | null;
+  isHidden?: boolean;
 }
 
 interface FormValues {
@@ -56,6 +59,7 @@ export default function List({
     setSelectedPublicListId(publicListId);
   };
 
+  const utils = api.useUtils();
   const updateList = api.list.update.useMutation();
 
   const { register, handleSubmit } = useForm<FormValues>({
@@ -82,6 +86,19 @@ export default function List({
     openModal("DELETE_LIST");
   };
 
+  const handleToggleHidden = () => {
+    if (!canEdit) return;
+    updateList.mutate(
+      {
+        listPublicId: list.publicId,
+        isHidden: !list.isHidden,
+      },
+      {
+        onSettled: () => utils.board.byId.invalidate(),
+      },
+    );
+  };
+
   return (
     <Draggable
       key={list.publicId}
@@ -95,7 +112,11 @@ export default function List({
           ref={provided.innerRef}
           {...provided.draggableProps}
           {...provided.dragHandleProps}
-          className="dark-text-dark-1000 mr-5 h-fit min-w-[18rem] max-w-[18rem] rounded-md border border-light-400 bg-light-300 py-2 pl-2 pr-1 text-neutral-900 dark:border-dark-300 dark:bg-dark-100"
+          className={`dark-text-dark-1000 mr-5 h-fit min-w-[18rem] max-w-[18rem] rounded-md border py-2 pl-2 pr-1 text-neutral-900 ${
+            list.isHidden
+              ? "border-dashed border-light-500 bg-light-200 opacity-70 dark:border-dark-400 dark:bg-dark-50"
+              : "border-light-400 bg-light-300 dark:border-dark-300 dark:bg-dark-100"
+          }`}
         >
           <div className="mb-2 flex justify-between">
             <form
@@ -137,6 +158,21 @@ export default function List({
                           action: () => openNewCardForm(list.publicId),
                           icon: (
                             <HiOutlineSquaresPlus className="h-[18px] w-[18px] text-dark-900" />
+                          ),
+                        },
+                      ]
+                    : []),
+                  ...(canEdit
+                    ? [
+                        {
+                          label: list.isHidden
+                            ? t`Show on board`
+                            : t`Hide from board`,
+                          action: handleToggleHidden,
+                          icon: list.isHidden ? (
+                            <HiOutlineEye className="h-[18px] w-[18px] text-dark-900" />
+                          ) : (
+                            <HiOutlineEyeSlash className="h-[18px] w-[18px] text-dark-900" />
                           ),
                         },
                       ]

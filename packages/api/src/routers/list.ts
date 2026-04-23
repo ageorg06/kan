@@ -162,6 +162,7 @@ export const listRouter = createTRPCRouter({
         listPublicId: z.string().min(12),
         name: z.string().min(1).optional(),
         index: z.number().optional(),
+        isHidden: z.boolean().optional(),
       }),
     )
     .output(listUpdateResponseSchema)
@@ -195,10 +196,13 @@ export const listRouter = createTRPCRouter({
 
       let result: { name: string; publicId: string } | undefined;
 
-      if (input.name) {
+      if (input.name !== undefined || input.isHidden !== undefined) {
         result = await listRepo.update(
           ctx.db,
-          { name: input.name },
+          {
+            ...(input.name !== undefined && { name: input.name }),
+            ...(input.isHidden !== undefined && { isHidden: input.isHidden }),
+          },
           { listPublicId: input.listPublicId },
         );
       }

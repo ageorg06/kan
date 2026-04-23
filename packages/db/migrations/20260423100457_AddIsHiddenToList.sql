@@ -1,0 +1,1 @@
+ALTER TABLE "list" ADD COLUMN "isHidden" boolean DEFAULT false NOT NULL;
