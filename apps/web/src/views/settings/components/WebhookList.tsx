@@ -15,6 +15,7 @@ interface TableRowProps {
   name?: string;
   url?: string;
   events?: string[];
+  platform?: string;
   active?: boolean;
   createdAt?: Date | null;
   dateLocale?: DateFnsLocale;
@@ -24,6 +25,14 @@ interface TableRowProps {
   onTest?: () => void;
   onDelete?: () => void;
 }
+
+const platformBadgeLabel: Record<string, string> = {
+  generic: "Generic",
+  google_chat: "Google Chat",
+  slack: "Slack",
+  discord: "Discord",
+  teams: "Teams",
+};
 
 function formatEvents(events: string[]) {
   return events
@@ -41,6 +50,7 @@ function TableRow({
   name,
   url,
   events,
+  platform,
   active,
   createdAt,
   dateLocale,
@@ -91,6 +101,11 @@ function TableRow({
         >
           {events && formatEvents(events)}
         </p>
+        {!showSkeleton && platform && platform !== "generic" && (
+          <p className="mt-1 text-[11px] text-neutral-500 dark:text-dark-800">
+            {platformBadgeLabel[platform] ?? platform}
+          </p>
+        )}
       </td>
       <td className="w-[10%] px-3 py-4">
         <span
@@ -252,6 +267,7 @@ export default function WebhookList({ workspacePublicId }: WebhookListProps) {
                       name={webhook.name}
                       url={webhook.url}
                       events={webhook.events}
+                      platform={webhook.platform}
                       active={webhook.active}
                       createdAt={webhook.createdAt}
                       dateLocale={dateLocale}
@@ -262,6 +278,7 @@ export default function WebhookList({ workspacePublicId }: WebhookListProps) {
                           name: webhook.name,
                           url: webhook.url,
                           events: webhook.events,
+                          platform: webhook.platform,
                           active: webhook.active,
                         });
                         openModal("EDIT_WEBHOOK", webhook.publicId, webhook.name);

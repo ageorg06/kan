@@ -2,9 +2,11 @@ import crypto from "crypto";
 import { z } from "zod";
 
 import type { dbClient } from "@kan/db/client";
-import type { WebhookEvent } from "@kan/db/schema";
+import type { WebhookEvent, WebhookPlatform } from "@kan/db/schema";
 import * as webhookRepo from "@kan/db/repository/webhook.repo";
 import { createLogger } from "@kan/logger";
+
+import { formatForPlatform } from "./webhookFormatters";
 
 const log = createLogger("webhook");
 
@@ -125,21 +127,26 @@ export async function sendWebhookToUrl(
   url: string,
   secret: string | undefined,
   payload: WebhookPayload,
+  platform: WebhookPlatform = "generic",
 ): Promise<{ success: boolean; statusCode?: number; error?: string }> {
   const result = webhookUrlSchema.safeParse(url);
   if (!result.success) {
     return { success: false, error: result.error.issues[0]?.message };
   }
 
-  const body = JSON.stringify(payload);
+  const body = JSON.stringify(formatForPlatform(platform, payload));
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
-    "X-Webhook-Event": payload.event,
-    "X-Webhook-Timestamp": payload.timestamp,
   };
 
-  if (secret) {
-    headers["X-Webhook-Signature"] = generateSignature(body, secret);
+  // Native chat platforms reject unknown headers and don't verify HMAC,
+  // so we only attach Kan-specific headers for the generic platform.
+  if (platform === "generic") {
+    headers["X-Webhook-Event"] = payload.event;
+    headers["X-Webhook-Timestamp"] = payload.timestamp;
+    if (secret) {
+      headers["X-Webhook-Signature"] = generateSignature(body, secret);
+    }
   }
 
   const controller = new AbortController();
@@ -199,15 +206,18 @@ export async function sendWebhooksForWorkspace(
 
     // Send to all subscribed webhooks in parallel (fire and forget)
     const promises = webhooksForEvent.map((webhook) =>
-      sendWebhookToUrl(webhook.url, webhook.secret ?? undefined, payload).then(
-        (result) => {
-          if (!result.success) {
-            log.error({ url: webhook.url, event: payload.event, error: result.error, statusCode: result.statusCode }, "Webhook delivery failed");
-          } else {
-            log.info({ url: webhook.url, event: payload.event, statusCode: result.statusCode }, "Webhook delivered");
-          }
-        },
-      ),
+      sendWebhookToUrl(
+        webhook.url,
+        webhook.secret ?? undefined,
+        payload,
+        webhook.platform,
+      ).then((result) => {
+        if (!result.success) {
+          log.error({ url: webhook.url, event: payload.event, platform: webhook.platform, error: result.error, statusCode: result.statusCode }, "Webhook delivery failed");
+        } else {
+          log.info({ url: webhook.url, event: payload.event, platform: webhook.platform, statusCode: result.statusCode }, "Webhook delivered");
+        }
+      }),
     );
 
     // Wait for all to complete but don't block on failures
