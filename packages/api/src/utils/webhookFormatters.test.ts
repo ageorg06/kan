@@ -25,9 +25,45 @@ describe("formatForPlatform", () => {
     expect(formatForPlatform("generic", basePayload)).toBe(basePayload);
   });
 
-  it("formats a Google Chat message", () => {
-    const out = formatForPlatform("google_chat", basePayload) as { text: string };
-    expect(out).toEqual({ text: "Achilleas created *Login bug* on Backend" });
+  it("formats a Google Chat message with list and board", () => {
+    const payload: WebhookPayload = {
+      ...basePayload,
+      data: { ...basePayload.data, list: { id: "list-1", name: "To Do" } },
+    };
+    const out = formatForPlatform("google_chat", payload) as { text: string };
+    expect(out.text).toBe(
+      "Achilleas created card *Login bug* in *To Do* on Backend",
+    );
+  });
+
+  it("formats a card.moved with from→to lists", () => {
+    const payload: WebhookPayload = {
+      ...basePayload,
+      event: "card.moved",
+      data: {
+        ...basePayload.data,
+        list: { id: "list-2", name: "Done" },
+        fromList: { id: "list-1", name: "In Progress" },
+      },
+    };
+    const out = formatForPlatform("slack", payload) as { text: string };
+    expect(out.text).toBe(
+      "Achilleas moved *Login bug* from *In Progress* to *Done* on Backend",
+    );
+  });
+
+  it("formats a list.created event", () => {
+    const payload: WebhookPayload = {
+      event: "list.created",
+      timestamp: "2024-01-15T12:00:00.000Z",
+      data: {
+        list: { id: "list-1", name: "Backlog" },
+        board: { id: "board-789", name: "Backend" },
+        user: { id: "user-1", name: "Achilleas" },
+      },
+    };
+    const out = formatForPlatform("google_chat", payload) as { text: string };
+    expect(out.text).toBe("Achilleas added list *Backlog* on Backend");
   });
 
   it("formats a Slack message with mrkdwn", () => {

@@ -888,6 +888,7 @@ export const cardRouter = createTRPCRouter({
       );
 
       let newListId: number | undefined;
+      let newListName: string | undefined;
 
       if (input.listPublicId) {
         const newList = await listRepo.getByPublicId(
@@ -902,6 +903,7 @@ export const cardRouter = createTRPCRouter({
           });
 
         newListId = newList.id;
+        newListName = newList.name;
       }
 
       if (!existingCard) {
@@ -1042,13 +1044,13 @@ export const cardRouter = createTRPCRouter({
       }
 
       // Fire webhooks (non-blocking)
+      const isMove =
+        !!newListId && existingCard.listId !== newListId;
       sendWebhooksForWorkspace(
         ctx.db,
         card.workspaceId,
         createCardWebhookPayload(
-          newListId && existingCard.listId !== newListId
-            ? "card.moved"
-            : "card.updated",
+          isMove ? "card.moved" : "card.updated",
           {
             id: String(result.id),
             title: result.title,
@@ -1059,7 +1061,13 @@ export const cardRouter = createTRPCRouter({
           {
             boardId: card.boardPublicId,
             boardName: card.boardName,
-            listName: card.listName,
+            listName: isMove ? newListName : card.listName,
+            fromList: isMove
+              ? {
+                  id: String(existingCard.listId),
+                  name: card.listName,
+                }
+              : undefined,
             user: ctx.user
               ? { id: ctx.user.id, name: ctx.user.name }
               : undefined,

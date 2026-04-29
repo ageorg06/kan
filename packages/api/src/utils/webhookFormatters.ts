@@ -6,22 +6,32 @@ import type { WebhookPayload } from "./webhook";
  * Build the human-readable summary line shown in chat messages.
  */
 function summary(payload: WebhookPayload): string {
-  const { card, board, user } = payload.data;
+  const { card, list, fromList, board, user } = payload.data;
   const who = user?.name ?? "Someone";
-  const cardTitle = card.title;
+  const cardTitle = card?.title ?? "card";
+  const listName = list?.name;
+  const fromListName = fromList?.name;
   const boardName = board?.name;
+
+  const onBoard = boardName ? ` on ${boardName}` : "";
+  const inList = listName ? ` in *${listName}*` : "";
 
   switch (payload.event) {
     case "card.created":
-      return boardName
-        ? `${who} created *${cardTitle}* on ${boardName}`
-        : `${who} created *${cardTitle}*`;
+      return `${who} created card *${cardTitle}*${inList}${onBoard}`;
     case "card.moved":
-      return `${who} moved *${cardTitle}*`;
+      if (fromListName && listName) {
+        return `${who} moved *${cardTitle}* from *${fromListName}* to *${listName}*${onBoard}`;
+      }
+      return listName
+        ? `${who} moved *${cardTitle}* to *${listName}*${onBoard}`
+        : `${who} moved *${cardTitle}*${onBoard}`;
     case "card.updated":
-      return `${who} updated *${cardTitle}*`;
+      return `${who} updated *${cardTitle}*${inList}${onBoard}`;
     case "card.deleted":
-      return `${who} deleted *${cardTitle}*`;
+      return `${who} deleted *${cardTitle}*${inList}${onBoard}`;
+    case "list.created":
+      return `${who} added list *${listName ?? "list"}*${onBoard}`;
   }
 }
 
