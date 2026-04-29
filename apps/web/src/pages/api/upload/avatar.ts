@@ -99,7 +99,7 @@ export default withRateLimit(
         user: updatedUser,
       });
     } catch (error) {
-      return res.status(500).json({ error: "Internal server error" });
+      throw error;
     }
   }),
 );
