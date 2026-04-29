@@ -30,7 +30,7 @@ export function AttachmentUpload({ cardPublicId }: { cardPublicId: string }) {
           method: "POST",
           headers: {
             "Content-Type": file.type,
-            "x-original-filename": file.name,
+            "x-original-filename": encodeURIComponent(file.name),
           },
           body: file,
         },
