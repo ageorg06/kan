@@ -46,7 +46,8 @@ export function AttachmentUpload({ cardPublicId }: { cardPublicId: string }) {
         message: t`Your file has been uploaded successfully.`,
         icon: "success",
       });
-    } catch {
+    } catch (error) {
+      console.error("attachment upload failed", error);
       showPopup({
         header: t`Upload failed`,
         message: t`Failed to upload attachment. Please try again.`,
