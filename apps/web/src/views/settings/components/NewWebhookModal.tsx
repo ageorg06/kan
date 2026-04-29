@@ -5,7 +5,7 @@ import { Controller, useForm } from "react-hook-form";
 import { HiXMark } from "react-icons/hi2";
 import { z } from "zod";
 
-import { webhookEvents } from "@kan/db/schema";
+import { webhookEvents, webhookPlatforms } from "@kan/db/schema";
 
 import Button from "~/components/Button";
 import Input from "~/components/Input";
@@ -30,8 +30,28 @@ const newWebhookSchema = z.object({
   events: z
     .array(z.enum(webhookEvents))
     .min(1, { message: t`Select at least one event` }),
+  platform: z.enum(webhookPlatforms),
   active: z.boolean(),
 });
+
+const platformLabels: Record<(typeof webhookPlatforms)[number], string> = {
+  generic: "Generic (Kan JSON + HMAC)",
+  google_chat: "Google Chat",
+  slack: "Slack",
+  discord: "Discord",
+  teams: "Microsoft Teams",
+};
+
+const platformHelp: Record<(typeof webhookPlatforms)[number], string> = {
+  generic:
+    "Posts the full Kan event payload with HMAC signature. Use for custom integrations.",
+  google_chat:
+    "Paste the webhook URL from your Chat space (Apps & Integrations → Manage webhooks).",
+  slack: "Paste the Incoming Webhook URL for the channel (apps.slack.com).",
+  discord: "Paste the channel webhook URL (Channel Settings → Integrations).",
+  teams:
+    "Paste the Incoming Webhook connector URL (Channel → Connectors → Incoming Webhook).",
+};
 
 type WebhookFormData = z.infer<typeof newWebhookSchema>;
 
@@ -65,6 +85,7 @@ export function NewWebhookModal({
       url: "",
       secret: "",
       events: [...webhookEvents],
+      platform: "generic",
       active: true,
     },
   });
@@ -76,6 +97,7 @@ export function NewWebhookModal({
         url: modalState.url ?? "",
         secret: "",
         events: modalState.events ?? ["card.created"],
+        platform: modalState.platform ?? "generic",
         active: modalState.active ?? true,
       });
     } else if (!isEdit) {
@@ -84,6 +106,7 @@ export function NewWebhookModal({
         url: "",
         secret: "",
         events: [...webhookEvents],
+        platform: "generic",
         active: true,
       });
     }
@@ -156,6 +179,7 @@ export function NewWebhookModal({
         url: data.url,
         secret: data.secret || undefined,
         events: data.events,
+        platform: data.platform,
         active: data.active,
       });
     } else {
@@ -165,6 +189,7 @@ export function NewWebhookModal({
         url: data.url,
         secret: data.secret || undefined,
         events: data.events,
+        platform: data.platform,
       });
     }
   };
@@ -214,6 +239,33 @@ export function NewWebhookModal({
 
           <div>
             <label className="mb-1 block text-sm font-medium text-light-900 dark:text-dark-900">
+              {t`Platform`}
+            </label>
+            <Controller
+              name="platform"
+              control={control}
+              render={({ field }) => (
+                <>
+                  <select
+                    {...field}
+                    className="block w-full rounded-md border-light-400 bg-light-50 py-2 px-3 text-sm text-light-900 focus:border-primary-500 focus:outline-none focus:ring-primary-500 dark:border-dark-400 dark:bg-dark-100 dark:text-dark-900"
+                  >
+                    {webhookPlatforms.map((p) => (
+                      <option key={p} value={p}>
+                        {platformLabels[p]}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="mt-1 text-xs text-neutral-500 dark:text-dark-800">
+                    {platformHelp[field.value]}
+                  </p>
+                </>
+              )}
+            />
+          </div>
+
+          <div>
+            <label className="mb-1 block text-sm font-medium text-light-900 dark:text-dark-900">
               {t`URL`}
             </label>
             <Input
@@ -224,21 +276,33 @@ export function NewWebhookModal({
             />
           </div>
 
-          <div>
-            <label className="mb-1 block text-sm font-medium text-light-900 dark:text-dark-900">
-              {t`Secret (optional)`}
-            </label>
-            <Input
-              id="secret"
-              type="password"
-              placeholder={isEdit ? t`Enter new secret to update` : t`HMAC secret for signature verification`}
-              {...register("secret")}
-              errorMessage={errors.secret?.message}
-            />
-            <p className="mt-1 text-xs text-neutral-500 dark:text-dark-800">
-              {t`Used to sign webhook payloads for verification. Leave blank to keep existing secret.`}
-            </p>
-          </div>
+          <Controller
+            name="platform"
+            control={control}
+            render={({ field }) =>
+              field.value === "generic" ? (
+                <div>
+                  <label className="mb-1 block text-sm font-medium text-light-900 dark:text-dark-900">
+                    {t`Secret (optional)`}
+                  </label>
+                  <Input
+                    id="secret"
+                    type="password"
+                    placeholder={isEdit ? t`Enter new secret to update` : t`HMAC secret for signature verification`}
+                    {...register("secret")}
+                    errorMessage={errors.secret?.message}
+                  />
+                  <p className="mt-1 text-xs text-neutral-500 dark:text-dark-800">
+                    {t`Used to sign webhook payloads for verification. Leave blank to keep existing secret.`}
+                  </p>
+                </div>
+              ) : (
+                <div className="rounded-md border border-light-300 bg-light-100 p-3 text-xs text-neutral-600 dark:border-dark-300 dark:bg-dark-200 dark:text-dark-800">
+                  {t`Native chat webhooks don't verify HMAC. Treat the URL itself as the secret — anyone with it can post to the channel.`}
+                </div>
+              )
+            }
+          />
 
           <div>
             <label className="mb-2 block text-sm font-medium text-light-900 dark:text-dark-900">

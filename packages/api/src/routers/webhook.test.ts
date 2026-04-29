@@ -43,6 +43,7 @@ describe("webhook router", () => {
     url: "https://example.com/webhook",
     secret: "secret123",
     events: ["card.created", "card.updated"] as const,
+    platform: "generic" as const,
     active: true,
     createdAt: new Date("2024-01-15"),
     updatedAt: null,
@@ -154,6 +155,7 @@ describe("webhook router", () => {
         name: "New Webhook",
         url: "https://example.com/new",
         events: ["card.created"] as const,
+        platform: "generic" as const,
         active: true,
         createdAt: new Date(),
       };
@@ -180,6 +182,7 @@ describe("webhook router", () => {
         url: "https://example.com/new",
         secret: undefined,
         events: ["card.created"],
+        platform: "generic",
         createdBy: mockUser.id,
       });
     });
@@ -192,6 +195,7 @@ describe("webhook router", () => {
         name: "Secure Webhook",
         url: "https://example.com/secure",
         events: ["card.created"] as const,
+        platform: "generic" as const,
         active: true,
         createdAt: new Date(),
       };

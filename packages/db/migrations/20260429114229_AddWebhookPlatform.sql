@@ -1,0 +1,1 @@
+ALTER TABLE "workspace_webhooks" ADD COLUMN "platform" text DEFAULT 'generic' NOT NULL;

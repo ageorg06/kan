@@ -22,6 +22,15 @@ export const webhookEvents = [
 ] as const;
 export type WebhookEvent = (typeof webhookEvents)[number];
 
+export const webhookPlatforms = [
+  "generic",
+  "google_chat",
+  "slack",
+  "discord",
+  "teams",
+] as const;
+export type WebhookPlatform = (typeof webhookPlatforms)[number];
+
 export const workspaceWebhooks = pgTable("workspace_webhooks", {
   id: bigserial("id", { mode: "number" }).primaryKey(),
   publicId: varchar("publicId", { length: 12 }).notNull().unique(),
@@ -32,6 +41,10 @@ export const workspaceWebhooks = pgTable("workspace_webhooks", {
   url: varchar("url", { length: 2048 }).notNull(),
   secret: text("secret"),
   events: text("events").notNull(), // JSON array of webhook events
+  platform: text("platform")
+    .notNull()
+    .default("generic")
+    .$type<WebhookPlatform>(),
   active: boolean("active").notNull().default(true),
   createdBy: uuid("createdBy")
     .notNull()
