@@ -726,6 +726,7 @@ export const getWorkspaceAndBoardIdByBoardPublicId = async (
   const result = await db.query.boards.findFirst({
     columns: {
       id: true,
+      name: true,
       workspaceId: true,
       createdBy: true,
     },

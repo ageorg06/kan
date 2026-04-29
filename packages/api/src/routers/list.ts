@@ -9,6 +9,10 @@ import * as listRepo from "@kan/db/repository/list.repo";
 import { createTRPCRouter, protectedProcedure } from "../trpc";
 import { listCreateResponseSchema, listUpdateResponseSchema } from "../schemas";
 import { assertCanDelete, assertCanEdit, assertPermission } from "../utils/permissions";
+import {
+  createListWebhookPayload,
+  sendWebhooksForWorkspace,
+} from "../utils/webhook";
 
 export const listRouter = createTRPCRouter({
   create: protectedProcedure
@@ -62,6 +66,25 @@ export const listRouter = createTRPCRouter({
           message: `Failed to create list`,
           code: "INTERNAL_SERVER_ERROR",
         });
+
+      // Fire webhooks (non-blocking)
+      sendWebhooksForWorkspace(
+        ctx.db,
+        board.workspaceId,
+        createListWebhookPayload(
+          "list.created",
+          { id: result.publicId, name: result.name },
+          {
+            boardId: input.boardPublicId,
+            boardName: board.name,
+            user: ctx.user
+              ? { id: ctx.user.id, name: ctx.user.name }
+              : undefined,
+          },
+        ),
+      ).catch((error) => {
+        console.error("Webhook delivery failed:", error);
+      });
 
       return result;
     }),

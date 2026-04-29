@@ -209,6 +209,7 @@ export const getByPublicId = async (db: dbClient, listPublicId: string) => {
   return db.query.lists.findFirst({
     columns: {
       id: true,
+      name: true,
       boardId: true,
       index: true,
     },

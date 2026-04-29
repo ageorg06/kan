@@ -16,7 +16,7 @@ export interface WebhookPayload {
   event: WebhookEventType;
   timestamp: string;
   data: {
-    card: {
+    card?: {
       id: string;
       title: string;
       description?: string | null;
@@ -29,6 +29,10 @@ export interface WebhookPayload {
       name: string;
     };
     list?: {
+      id: string;
+      name: string;
+    };
+    fromList?: {
       id: string;
       name: string;
     };
@@ -240,6 +244,7 @@ export function createCardWebhookPayload(
     boardId: string;
     boardName?: string;
     listName?: string;
+    fromList?: { id: string; name: string };
     user?: {
       id: string;
       name: string | null;
@@ -265,8 +270,31 @@ export function createCardWebhookPayload(
       list: context.listName
         ? { id: card.listId, name: context.listName }
         : undefined,
+      fromList: context.fromList,
       user: context.user,
       changes: context.changes,
+    },
+  };
+}
+
+export function createListWebhookPayload(
+  event: "list.created",
+  list: { id: string; name: string },
+  context: {
+    boardId: string;
+    boardName?: string;
+    user?: { id: string; name: string | null };
+  },
+): WebhookPayload {
+  return {
+    event,
+    timestamp: new Date().toISOString(),
+    data: {
+      list,
+      board: context.boardName
+        ? { id: context.boardId, name: context.boardName }
+        : undefined,
+      user: context.user,
     },
   };
 }
