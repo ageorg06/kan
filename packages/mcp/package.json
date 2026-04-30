@@ -4,10 +4,16 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "tsx src/index.ts"
+    "start": "tsx src/index.ts",
+    "start:swe-rebench": "tsx src/swe-rebench.ts",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@kan/api": "workspace:*",
+    "@kan/db": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.12.0",
+    "@trpc/server": "catalog:",
+    "drizzle-orm": "^0.42.0",
     "pg": "^8.11.3",
     "zod": "catalog:"
   },
