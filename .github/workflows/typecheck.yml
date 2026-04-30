@@ -1,0 +1,39 @@
+name: Typecheck
+
+on:
+  pull_request:
+    branches: ["main"]
+  push:
+    branches: ["main"]
+
+concurrency:
+  group: typecheck-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.14.2
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # @kan/docs is excluded — its only dep is mintlify, which fails to
+      # populate node_modules cleanly under `pnpm install --frozen-lockfile`
+      # in CI, breaking its `tsc --noEmit`. Docs has its own Mintlify build
+      # pipeline.
+      - name: Typecheck
+        run: pnpm turbo run typecheck --filter=!@kan/docs
