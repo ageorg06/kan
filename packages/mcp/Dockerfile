@@ -1,34 +1,47 @@
-FROM node:20-alpine
+# syntax=docker/dockerfile:1.7
+
+ARG NODE_VERSION=20
+
+# ============================================
+# Stage 1: Alpine base with pnpm and turbo
+# ============================================
+FROM node:${NODE_VERSION}-alpine AS alpine
+RUN apk update && \
+    apk add --no-cache libc6-compat && \
+    rm -rf /var/cache/apk/* /tmp/* || true && \
+    corepack enable && \
+    npm install turbo@2.3.1 --global && \
+    pnpm config set store-dir ~/.pnpm-store
+
+# ============================================
+# Stage 2: Prune the monorepo to @kan/mcp + deps
+# ============================================
+FROM alpine AS pruner
+WORKDIR /app
+COPY . .
+RUN turbo prune --scope=@kan/mcp --docker
+
+# ============================================
+# Stage 3: Install dependencies on the pruned tree
+# ============================================
+FROM alpine AS deps
 WORKDIR /app
 
-RUN npm install -g tsx
+COPY --from=pruner /app/out/pnpm-lock.yaml ./pnpm-lock.yaml
+COPY --from=pruner /app/out/pnpm-workspace.yaml ./pnpm-workspace.yaml
+COPY --from=pruner /app/out/json/ .
 
-# Install deps first (before any workspace package.json is copied)
-RUN npm init -y --silent && npm install @modelcontextprotocol/sdk zod pg
+ENV CI=true
+RUN pnpm install --frozen-lockfile
 
-# Copy source the MCP server reads at runtime
-COPY packages/mcp/src/ packages/mcp/src/
-COPY packages/mcp/tsconfig.json packages/mcp/
-COPY packages/db/src/schema/ packages/db/src/schema/
-COPY packages/db/src/repository/ packages/db/src/repository/
-COPY packages/api/src/routers/ packages/api/src/routers/
-COPY pnpm-workspace.yaml .
+# ============================================
+# Stage 4: Runtime image with full source
+# ============================================
+FROM alpine AS runtime
+WORKDIR /app
 
-# Copy package.json files for get_package_map tool (read-only, not installed)
-COPY apps/web/package.json apps/web/package.json
-COPY apps/docs/package.json apps/docs/package.json
-COPY packages/api/package.json packages/api/package.json
-COPY packages/auth/package.json packages/auth/package.json
-COPY packages/db/package.json packages/db/package.json
-COPY packages/email/package.json packages/email/package.json
-COPY packages/logger/package.json packages/logger/package.json
-COPY packages/mcp/package.json packages/mcp/package.json
-COPY packages/shared/package.json packages/shared/package.json
-COPY packages/stripe/package.json packages/stripe/package.json
-COPY tooling/eslint/package.json tooling/eslint/package.json
-COPY tooling/prettier/package.json tooling/prettier/package.json
-COPY tooling/tailwind/package.json tooling/tailwind/package.json
-COPY tooling/typescript/package.json tooling/typescript/package.json
+COPY --from=deps /app/ ./
+COPY --from=pruner /app/out/full/ .
 
 ENV NODE_ENV=production
 ENV MCP_PORT=3100
@@ -37,4 +50,4 @@ EXPOSE 3100
 HEALTHCHECK --interval=30s --timeout=3s \
   CMD wget -qO- http://localhost:3100/health || exit 1
 
-CMD ["tsx", "packages/mcp/src/index.ts"]
+CMD ["pnpm", "-F", "@kan/mcp", "start"]
