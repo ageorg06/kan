@@ -23,8 +23,17 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { TRPCError } from "@trpc/server";
 import pg from "pg";
 import { z } from "zod";
+
+import { getRouterCaller } from "./router-caller";
+
+function trpcErrorToText(err: unknown): string {
+  if (err instanceof TRPCError) return `Error (${err.code}): ${err.message}`;
+  if (err instanceof Error) return `Error: ${err.message}`;
+  return `Error: ${String(err)}`;
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -65,14 +74,16 @@ function text(value: string) {
 
 // Extract pgTable names from a Drizzle schema file
 function extractTableNames(content: string): string[] {
-  return [...content.matchAll(/pgTable\(\s*["']([^"']+)["']/g)].map(
-    (m) => m[1],
-  );
+  return [...content.matchAll(/pgTable\(\s*["']([^"']+)["']/g)]
+    .map((m) => m[1])
+    .filter((n): n is string => n !== undefined);
 }
 
 // Extract pgEnum names from a Drizzle schema file
 function extractEnumNames(content: string): string[] {
-  return [...content.matchAll(/pgEnum\(\s*["']([^"']+)["']/g)].map((m) => m[1]);
+  return [...content.matchAll(/pgEnum\(\s*["']([^"']+)["']/g)]
+    .map((m) => m[1])
+    .filter((n): n is string => n !== undefined);
 }
 
 // Extract tRPC procedure declarations from a router file
@@ -86,12 +97,14 @@ function extractProcedures(
   let match;
   while ((match = procRegex.exec(content)) !== null) {
     const name = match[1];
-    const access = match[2].replace("Procedure", "");
+    const accessRaw = match[2];
+    if (!name || !accessRaw) continue;
+    const access = accessRaw.replace("Procedure", "");
 
     // Look ahead (up to 800 chars) for .query or .mutation
     const lookahead = content.slice(match.index, match.index + 800);
     const typeMatch = lookahead.match(/\.(query|mutation)\s*\(/);
-    const type = typeMatch ? typeMatch[1] : "unknown";
+    const type = typeMatch?.[1] ?? "unknown";
 
     results.push({ name, type, access });
   }
@@ -793,10 +806,9 @@ Permission overrides: workspace_member_permissions per-member overrides`,
           .describe("Due date ISO string (e.g. '2026-04-15')"),
       },
       async ({ workspace, board, list, title, description, dueDate }) => {
-        // Resolve listId
         const listRes = await query(
           `
-        SELECT l.id FROM list l
+        SELECT l."publicId" FROM list l
         JOIN board b ON l."boardId" = b.id
         JOIN workspace w ON b."workspaceId" = w.id
         WHERE w.slug = $1 AND b.slug = $2 AND l.name ILIKE $3 AND l."deletedAt" IS NULL
@@ -806,57 +818,24 @@ Permission overrides: workspace_member_permissions per-member overrides`,
         );
         if (listRes.rows.length === 0)
           return text(`List "${list}" not found in /${workspace}/${board}.`);
-        const listId = listRes.rows[0].id;
 
-        // Get next index
-        const idxRes = await query(
-          `SELECT COALESCE(MAX(index), -1) + 1 AS next FROM card WHERE "listId" = $1 AND "deletedAt" IS NULL`,
-          [listId],
-        );
-        const index = idxRes.rows[0].next;
-
-        const publicId = generatePublicId();
-        const activityPublicId = generatePublicId();
-
-        await query(`BEGIN`);
         try {
-          await query(
-            `
-          INSERT INTO card ("publicId", title, description, index, "listId", "dueDate", "createdAt", "updatedAt")
-          VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())
-        `,
-            [
-              publicId,
-              title,
-              description ?? null,
-              index,
-              listId,
-              dueDate ?? null,
-            ],
+          const caller = await getRouterCaller();
+          const newCard = await caller.card.create({
+            title,
+            description: description ?? "",
+            listPublicId: listRes.rows[0].publicId,
+            labelPublicIds: [],
+            memberPublicIds: [],
+            position: "end",
+            dueDate: dueDate ? new Date(dueDate) : null,
+          });
+          return text(
+            `Created card **${title}** (${newCard.publicId}) in ${list}.`,
           );
-
-          // Get the new card's id
-          const cardRes = await query(
-            `SELECT id FROM card WHERE "publicId" = $1`,
-            [publicId],
-          );
-          const cardId = cardRes.rows[0].id;
-
-          await query(
-            `
-          INSERT INTO card_activity ("publicId", type, "cardId", "createdAt")
-          VALUES ($1, 'card.created', $2, NOW())
-        `,
-            [activityPublicId, cardId],
-          );
-
-          await query(`COMMIT`);
         } catch (err) {
-          await query(`ROLLBACK`);
-          throw err;
+          return text(trpcErrorToText(err));
         }
-
-        return text(`Created card **${title}** (${publicId}) in ${list}.`);
       },
     );
 
@@ -877,78 +856,81 @@ Permission overrides: workspace_member_permissions per-member overrides`,
           .describe("Move to this list name (must be in same board)"),
       },
       async ({ id, title, description, dueDate, list }) => {
-        // Get current card
-        const cardRes = await query(
-          `
-        SELECT c.id, c.title, c.description, c."dueDate", c.index, c."listId",
-          l.name AS list_name, l."boardId"
-        FROM card c JOIN list l ON c."listId" = l.id
-        WHERE c."publicId" = $1 AND c."deletedAt" IS NULL
-      `,
-          [id],
-        );
-        if (cardRes.rows.length === 0) return text(`Card "${id}" not found.`);
-        const card = cardRes.rows[0];
-
-        const updates: string[] = [`"updatedAt" = NOW()`];
-        const params: unknown[] = [];
-        const changes: string[] = [];
-
-        if (title !== undefined && title !== card.title) {
-          params.push(title);
-          updates.push(`title = $${params.length}`);
-          changes.push(`title: "${card.title}" → "${title}"`);
-        }
-        if (description !== undefined && description !== card.description) {
-          params.push(description);
-          updates.push(`description = $${params.length}`);
-          changes.push("description updated");
-        }
-        if (dueDate !== undefined) {
-          const newDue = dueDate === "remove" ? null : dueDate;
-          params.push(newDue);
-          updates.push(`"dueDate" = $${params.length}`);
-          changes.push(
-            dueDate === "remove" ? "due date removed" : `due date → ${dueDate}`,
-          );
+        if (
+          title === undefined &&
+          description === undefined &&
+          dueDate === undefined &&
+          list === undefined
+        ) {
+          return text("No changes to make.");
         }
 
-        let newListId = card.listId;
+        let listPublicId: string | undefined;
+        let targetListName: string | undefined;
+        let targetIndex: number | undefined;
         if (list !== undefined) {
-          const listRes = await query(
+          const targetRes = await query(
             `
-          SELECT id, name FROM list WHERE "boardId" = $1 AND name ILIKE $2 AND "deletedAt" IS NULL LIMIT 1
+          SELECT l."publicId", l.name, l.id FROM list l
+          JOIN board b ON l."boardId" = b.id
+          WHERE b.id = (
+            SELECT cur."boardId" FROM list cur
+            JOIN card c ON c."listId" = cur.id
+            WHERE c."publicId" = $1
+          )
+          AND l.name ILIKE $2 AND l."deletedAt" IS NULL
+          LIMIT 1
         `,
-            [card.boardId, `%${list}%`],
+            [id, `%${list}%`],
           );
-          if (listRes.rows.length === 0)
+          if (targetRes.rows.length === 0)
             return text(`List "${list}" not found in this board.`);
-          newListId = listRes.rows[0].id;
-          if (newListId !== card.listId) {
-            // Get next index in target list
-            const idxRes = await query(
-              `SELECT COALESCE(MAX(index), -1) + 1 AS next FROM card WHERE "listId" = $1 AND "deletedAt" IS NULL`,
-              [newListId],
-            );
-            params.push(newListId);
-            updates.push(`"listId" = $${params.length}`);
-            params.push(idxRes.rows[0].next);
-            updates.push(`index = $${params.length}`);
-            changes.push(`moved to "${listRes.rows[0].name}"`);
-          }
+          listPublicId = targetRes.rows[0].publicId;
+          targetListName = targetRes.rows[0].name;
+          const idxRes = await query(
+            `SELECT COALESCE(MAX(index), -1) + 1 AS next FROM card WHERE "listId" = $1 AND "deletedAt" IS NULL`,
+            [targetRes.rows[0].id],
+          );
+          targetIndex = idxRes.rows[0].next;
         }
 
-        if (changes.length === 0) return text("No changes to make.");
+        const dueDateValue =
+          dueDate === undefined
+            ? undefined
+            : dueDate === "remove"
+              ? null
+              : new Date(dueDate);
 
-        params.push(card.id);
-        await query(
-          `UPDATE card SET ${updates.join(", ")} WHERE id = $${params.length}`,
-          params,
-        );
+        try {
+          const caller = await getRouterCaller();
+          await caller.card.update({
+            cardPublicId: id,
+            ...(title !== undefined && { title }),
+            ...(description !== undefined && { description }),
+            ...(dueDate !== undefined && { dueDate: dueDateValue }),
+            ...(listPublicId !== undefined && {
+              listPublicId,
+              index: targetIndex,
+            }),
+          });
 
-        return text(
-          `Updated card (${id}):\n${changes.map((c) => `  - ${c}`).join("\n")}`,
-        );
+          const changes: string[] = [];
+          if (title !== undefined) changes.push(`title → "${title}"`);
+          if (description !== undefined) changes.push("description updated");
+          if (dueDate !== undefined)
+            changes.push(
+              dueDate === "remove"
+                ? "due date removed"
+                : `due date → ${dueDate}`,
+            );
+          if (targetListName) changes.push(`moved to "${targetListName}"`);
+
+          return text(
+            `Updated card (${id}):\n${changes.map((c) => `  - ${c}`).join("\n")}`,
+          );
+        } catch (err) {
+          return text(trpcErrorToText(err));
+        }
       },
     );
 
@@ -957,16 +939,20 @@ Permission overrides: workspace_member_permissions per-member overrides`,
       "Soft-delete a card by its publicId.",
       { id: z.string().describe("Card publicId") },
       async ({ id }) => {
-        const res = await query(
-          `
-        UPDATE card SET "deletedAt" = NOW() WHERE "publicId" = $1 AND "deletedAt" IS NULL
-        RETURNING title
-      `,
+        const titleRes = await query(
+          `SELECT title FROM card WHERE "publicId" = $1 AND "deletedAt" IS NULL`,
           [id],
         );
-        if (res.rowCount === 0)
+        if (titleRes.rows.length === 0)
           return text(`Card "${id}" not found or already deleted.`);
-        return text(`Deleted card **${res.rows[0].title}** (${id}).`);
+
+        try {
+          const caller = await getRouterCaller();
+          await caller.card.delete({ cardPublicId: id });
+          return text(`Deleted card **${titleRes.rows[0].title}** (${id}).`);
+        } catch (err) {
+          return text(trpcErrorToText(err));
+        }
       },
     );
 
@@ -981,7 +967,7 @@ Permission overrides: workspace_member_permissions per-member overrides`,
       async ({ workspace, board, name }) => {
         const boardRes = await query(
           `
-        SELECT b.id FROM board b
+        SELECT b."publicId" FROM board b
         JOIN workspace w ON b."workspaceId" = w.id
         WHERE w.slug = $1 AND b.slug = $2 AND b."deletedAt" IS NULL LIMIT 1
       `,
@@ -989,25 +975,19 @@ Permission overrides: workspace_member_permissions per-member overrides`,
         );
         if (boardRes.rows.length === 0)
           return text(`Board "${board}" not found in /${workspace}.`);
-        const boardId = boardRes.rows[0].id;
 
-        const idxRes = await query(
-          `SELECT COALESCE(MAX(index), -1) + 1 AS next FROM list WHERE "boardId" = $1 AND "deletedAt" IS NULL`,
-          [boardId],
-        );
-        const publicId = generatePublicId();
-
-        await query(
-          `
-        INSERT INTO list ("publicId", name, index, "boardId", "createdAt", "updatedAt")
-        VALUES ($1, $2, $3, $4, NOW(), NOW())
-      `,
-          [publicId, name, idxRes.rows[0].next, boardId],
-        );
-
-        return text(
-          `Created list **${name}** (${publicId}) in /${workspace}/${board}.`,
-        );
+        try {
+          const caller = await getRouterCaller();
+          const result = await caller.list.create({
+            name,
+            boardPublicId: boardRes.rows[0].publicId,
+          });
+          return text(
+            `Created list **${result.name}** (${result.publicId}) in /${workspace}/${board}.`,
+          );
+        } catch (err) {
+          return text(trpcErrorToText(err));
+        }
       },
     );
 
@@ -1017,48 +997,40 @@ Permission overrides: workspace_member_permissions per-member overrides`,
       {
         workspace: z.string().describe("Workspace slug"),
         name: z.string().describe("Board name"),
-        description: z.string().optional().describe("Board description"),
         visibility: z
           .enum(["private", "public"])
           .optional()
           .default("private")
-          .describe("Visibility"),
+          .describe("Visibility (set after creation)"),
       },
-      async ({ workspace, name, description, visibility }) => {
+      async ({ workspace, name, visibility }) => {
         const wsRes = await query(
-          `SELECT id FROM workspace WHERE slug = $1 AND "deletedAt" IS NULL LIMIT 1`,
+          `SELECT "publicId" FROM workspace WHERE slug = $1 AND "deletedAt" IS NULL LIMIT 1`,
           [workspace],
         );
         if (wsRes.rows.length === 0)
           return text(`Workspace "${workspace}" not found.`);
-        const workspaceId = wsRes.rows[0].id;
 
-        // Generate slug from name
-        const slug = name
-          .toLowerCase()
-          .replace(/[^a-z0-9]+/g, "-")
-          .replace(/^-|-$/g, "");
-        const uniqueSlug = `${slug}-${generatePublicId().slice(0, 6)}`;
-        const publicId = generatePublicId();
-
-        await query(
-          `
-        INSERT INTO board ("publicId", name, description, slug, "workspaceId", visibility, type, "isArchived", "createdAt", "updatedAt")
-        VALUES ($1, $2, $3, $4, $5, $6, 'regular', false, NOW(), NOW())
-      `,
-          [
-            publicId,
+        try {
+          const caller = await getRouterCaller();
+          const board = await caller.board.create({
             name,
-            description ?? null,
-            uniqueSlug,
-            workspaceId,
-            visibility,
-          ],
-        );
-
-        return text(
-          `Created board **${name}** (${publicId}) in /${workspace}.\nSlug: /${uniqueSlug}`,
-        );
+            workspacePublicId: wsRes.rows[0].publicId,
+            lists: [],
+            labels: [],
+          });
+          if (visibility === "public") {
+            await caller.board.update({
+              boardPublicId: board.publicId,
+              visibility: "public",
+            });
+          }
+          return text(
+            `Created board **${name}** (${board.publicId}) in /${workspace}.`,
+          );
+        } catch (err) {
+          return text(trpcErrorToText(err));
+        }
       },
     );
     // ---- Comments -------------------------------------------------------
@@ -1071,18 +1043,13 @@ Permission overrides: workspace_member_permissions per-member overrides`,
         comment: z.string().describe("Comment text"),
       },
       async ({ id, comment }) => {
-        const cardRes = await query(
-          `SELECT id FROM card WHERE "publicId" = $1 AND "deletedAt" IS NULL`,
-          [id],
-        );
-        if (cardRes.rows.length === 0) return text(`Card "${id}" not found.`);
-        const cardId = cardRes.rows[0].id;
-        const publicId = generatePublicId();
-        await query(
-          `INSERT INTO card_comments ("publicId", comment, "cardId", "createdAt", "updatedAt") VALUES ($1, $2, $3, NOW(), NOW())`,
-          [publicId, comment, cardId],
-        );
-        return text(`Added comment to card ${id}.`);
+        try {
+          const caller = await getRouterCaller();
+          await caller.card.addComment({ cardPublicId: id, comment });
+          return text(`Added comment to card ${id}.`);
+        } catch (err) {
+          return text(trpcErrorToText(err));
+        }
       },
     );
 
@@ -1102,25 +1069,27 @@ Permission overrides: workspace_member_permissions per-member overrides`,
       },
       async ({ workspace, board, name, colourCode }) => {
         const boardRes = await query(
-          `SELECT b.id FROM board b
+          `SELECT b."publicId" FROM board b
            JOIN workspace w ON b."workspaceId" = w.id
            WHERE w.slug = $1 AND b.slug = $2 AND b."deletedAt" IS NULL LIMIT 1`,
           [workspace, board],
         );
         if (boardRes.rows.length === 0)
           return text(`Board "${board}" not found in /${workspace}.`);
-        const boardId = boardRes.rows[0].id;
 
-        const publicId = generatePublicId();
-        await query(
-          `INSERT INTO label ("publicId", name, "colourCode", "boardId", "createdAt", "updatedAt")
-           VALUES ($1, $2, $3, $4, NOW(), NOW())`,
-          [publicId, name, colourCode, boardId],
-        );
-
-        return text(
-          `Created label **${name}** (${publicId}) on /${workspace}/${board} with colour ${colourCode}.`,
-        );
+        try {
+          const caller = await getRouterCaller();
+          const result = await caller.label.create({
+            name,
+            boardPublicId: boardRes.rows[0].publicId,
+            colourCode,
+          });
+          return text(
+            `Created label **${result.name}** (${result.publicId}) on /${workspace}/${board} with colour ${colourCode}.`,
+          );
+        } catch (err) {
+          return text(trpcErrorToText(err));
+        }
       },
     );
 
@@ -1153,61 +1122,82 @@ Permission overrides: workspace_member_permissions per-member overrides`,
 
     server.tool(
       "add_label_to_card",
-      "Add a label to a card.",
+      "Add a label to a card (no-op if already present).",
       {
         cardId: z.string().describe("Card publicId"),
         labelId: z.string().describe("Label publicId"),
       },
       async ({ cardId, labelId }) => {
-        const cardRes = await query(
-          `SELECT id FROM card WHERE "publicId" = $1 AND "deletedAt" IS NULL`,
-          [cardId],
-        );
-        if (cardRes.rows.length === 0)
-          return text(`Card "${cardId}" not found.`);
         const labelRes = await query(
-          `SELECT id, name FROM label WHERE "publicId" = $1 AND "deletedAt" IS NULL`,
+          `SELECT name FROM label WHERE "publicId" = $1 AND "deletedAt" IS NULL`,
           [labelId],
         );
         if (labelRes.rows.length === 0)
           return text(`Label "${labelId}" not found.`);
-        await query(
-          `INSERT INTO "_card_labels" ("cardId", "labelId") VALUES ($1, $2) ON CONFLICT DO NOTHING`,
-          [cardRes.rows[0].id, labelRes.rows[0].id],
-        );
-        return text(
-          `Added label **${labelRes.rows[0].name}** to card ${cardId}.`,
-        );
+        try {
+          const caller = await getRouterCaller();
+          // addOrRemoveLabel is a toggle: returns { newLabel: true } if it added.
+          // If it returned false, the label was already there and we just removed it —
+          // call again to put it back.
+          const result = await caller.card.addOrRemoveLabel({
+            cardPublicId: cardId,
+            labelPublicId: labelId,
+          });
+          if (!result.newLabel) {
+            await caller.card.addOrRemoveLabel({
+              cardPublicId: cardId,
+              labelPublicId: labelId,
+            });
+            return text(
+              `Label **${labelRes.rows[0].name}** was already on card ${cardId}.`,
+            );
+          }
+          return text(
+            `Added label **${labelRes.rows[0].name}** to card ${cardId}.`,
+          );
+        } catch (err) {
+          return text(trpcErrorToText(err));
+        }
       },
     );
 
     server.tool(
       "remove_label_from_card",
-      "Remove a label from a card.",
+      "Remove a label from a card (no-op if not present).",
       {
         cardId: z.string().describe("Card publicId"),
         labelId: z.string().describe("Label publicId"),
       },
       async ({ cardId, labelId }) => {
-        const cardRes = await query(
-          `SELECT id FROM card WHERE "publicId" = $1 AND "deletedAt" IS NULL`,
-          [cardId],
-        );
-        if (cardRes.rows.length === 0)
-          return text(`Card "${cardId}" not found.`);
         const labelRes = await query(
-          `SELECT id, name FROM label WHERE "publicId" = $1`,
+          `SELECT name FROM label WHERE "publicId" = $1`,
           [labelId],
         );
         if (labelRes.rows.length === 0)
           return text(`Label "${labelId}" not found.`);
-        await query(
-          `DELETE FROM "_card_labels" WHERE "cardId" = $1 AND "labelId" = $2`,
-          [cardRes.rows[0].id, labelRes.rows[0].id],
-        );
-        return text(
-          `Removed label **${labelRes.rows[0].name}** from card ${cardId}.`,
-        );
+        try {
+          const caller = await getRouterCaller();
+          // Toggle: { newLabel: true } means it added (label wasn't there) —
+          // undo by calling again so we end in the desired removed state.
+          const result = await caller.card.addOrRemoveLabel({
+            cardPublicId: cardId,
+            labelPublicId: labelId,
+          });
+          if (result.newLabel) {
+            await caller.card.addOrRemoveLabel({
+              cardPublicId: cardId,
+              labelPublicId: labelId,
+            });
+            return text(
+              `Label **${labelRes.rows[0].name}** was not on card ${cardId}.`,
+            );
+          }
+          return text(
+            `Removed label **${labelRes.rows[0].name}** from card ${cardId}.`,
+          );
+        } catch (err) {
+          return text(trpcErrorToText(err));
+        }
       },
     );
 
@@ -1223,20 +1213,26 @@ Permission overrides: workspace_member_permissions per-member overrides`,
         name: z.string().describe("New name"),
       },
       async ({ workspace, board, list, name }) => {
-        const res = await query(
-          `UPDATE list SET name = $1, "updatedAt" = NOW()
-         WHERE id = (
-           SELECT l.id FROM list l
+        const listRes = await query(
+          `SELECT l."publicId" FROM list l
            JOIN board b ON l."boardId" = b.id
            JOIN workspace w ON b."workspaceId" = w.id
-           WHERE w.slug = $2 AND b.slug = $3 AND l.name ILIKE $4 AND l."deletedAt" IS NULL
-           LIMIT 1
-         ) RETURNING "publicId"`,
-          [name, workspace, board, `%${list}%`],
+           WHERE w.slug = $1 AND b.slug = $2 AND l.name ILIKE $3 AND l."deletedAt" IS NULL
+           LIMIT 1`,
+          [workspace, board, `%${list}%`],
         );
-        if (res.rowCount === 0)
+        if (listRes.rows.length === 0)
           return text(`List "${list}" not found in /${workspace}/${board}.`);
-        return text(`Renamed list to **${name}**.`);
+        try {
+          const caller = await getRouterCaller();
+          await caller.list.update({
+            listPublicId: listRes.rows[0].publicId,
+            name,
+          });
+          return text(`Renamed list to **${name}**.`);
+        } catch (err) {
+          return text(trpcErrorToText(err));
+        }
       },
     );
 
@@ -1250,7 +1246,7 @@ Permission overrides: workspace_member_permissions per-member overrides`,
       },
       async ({ workspace, board, list }) => {
         const listRes = await query(
-          `SELECT l.id, l.name FROM list l
+          `SELECT l."publicId", l.name FROM list l
          JOIN board b ON l."boardId" = b.id
          JOIN workspace w ON b."workspaceId" = w.id
          WHERE w.slug = $1 AND b.slug = $2 AND l.name ILIKE $3 AND l."deletedAt" IS NULL
@@ -1258,24 +1254,15 @@ Permission overrides: workspace_member_permissions per-member overrides`,
           [workspace, board, `%${list}%`],
         );
         if (listRes.rows.length === 0) return text(`List "${list}" not found.`);
-        const listId = listRes.rows[0].id;
-        await query(`BEGIN`);
         try {
-          await query(
-            `UPDATE card SET "deletedAt" = NOW() WHERE "listId" = $1 AND "deletedAt" IS NULL`,
-            [listId],
+          const caller = await getRouterCaller();
+          await caller.list.delete({ listPublicId: listRes.rows[0].publicId });
+          return text(
+            `Deleted list **${listRes.rows[0].name}** and all its cards.`,
           );
-          await query(`UPDATE list SET "deletedAt" = NOW() WHERE id = $1`, [
-            listId,
-          ]);
-          await query(`COMMIT`);
         } catch (err) {
-          await query(`ROLLBACK`);
-          throw err;
+          return text(trpcErrorToText(err));
         }
-        return text(
-          `Deleted list **${listRes.rows[0].name}** and all its cards.`,
-        );
       },
     );
 
@@ -1283,12 +1270,11 @@ Permission overrides: workspace_member_permissions per-member overrides`,
 
     server.tool(
       "update_board",
-      "Update a board's name, description, or visibility. Can also archive/unarchive.",
+      "Update a board's name or visibility. Can also archive/unarchive.",
       {
         workspace: z.string().describe("Workspace slug"),
         board: z.string().describe("Board slug"),
         name: z.string().optional().describe("New name"),
-        description: z.string().optional().describe("New description"),
         visibility: z
           .enum(["private", "public"])
           .optional()
@@ -1298,50 +1284,42 @@ Permission overrides: workspace_member_permissions per-member overrides`,
           .optional()
           .describe("true to archive, false to unarchive"),
       },
-      async ({ workspace, board, name, description, visibility, archived }) => {
+      async ({ workspace, board, name, visibility, archived }) => {
+        if (
+          name === undefined &&
+          visibility === undefined &&
+          archived === undefined
+        )
+          return text("No changes to make.");
+
         const boardRes = await query(
-          `SELECT b.id FROM board b JOIN workspace w ON b."workspaceId" = w.id
+          `SELECT b."publicId" FROM board b JOIN workspace w ON b."workspaceId" = w.id
          WHERE w.slug = $1 AND b.slug = $2 AND b."deletedAt" IS NULL LIMIT 1`,
           [workspace, board],
         );
         if (boardRes.rows.length === 0)
           return text(`Board "${board}" not found.`);
-        const boardId = boardRes.rows[0].id;
 
-        const updates: string[] = [`"updatedAt" = NOW()`];
-        const params: unknown[] = [];
-        const changes: string[] = [];
-
-        if (name !== undefined) {
-          params.push(name);
-          updates.push(`name = $${params.length}`);
-          changes.push(`name → "${name}"`);
+        try {
+          const caller = await getRouterCaller();
+          await caller.board.update({
+            boardPublicId: boardRes.rows[0].publicId,
+            ...(name !== undefined && { name }),
+            ...(visibility !== undefined && { visibility }),
+            ...(archived !== undefined && { isArchived: archived }),
+          });
+          const changes: string[] = [];
+          if (name !== undefined) changes.push(`name → "${name}"`);
+          if (visibility !== undefined)
+            changes.push(`visibility → ${visibility}`);
+          if (archived !== undefined)
+            changes.push(archived ? "archived" : "unarchived");
+          return text(
+            `Updated board /${board}:\n${changes.map((c) => `  - ${c}`).join("\n")}`,
+          );
+        } catch (err) {
+          return text(trpcErrorToText(err));
         }
-        if (description !== undefined) {
-          params.push(description);
-          updates.push(`description = $${params.length}`);
-          changes.push("description updated");
-        }
-        if (visibility !== undefined) {
-          params.push(visibility);
-          updates.push(`visibility = $${params.length}`);
-          changes.push(`visibility → ${visibility}`);
-        }
-        if (archived !== undefined) {
-          params.push(archived);
-          updates.push(`"isArchived" = $${params.length}`);
-          changes.push(archived ? "archived" : "unarchived");
-        }
-
-        if (changes.length === 0) return text("No changes to make.");
-        params.push(boardId);
-        await query(
-          `UPDATE board SET ${updates.join(", ")} WHERE id = $${params.length}`,
-          params,
-        );
-        return text(
-          `Updated board /${board}:\n${changes.map((c) => `  - ${c}`).join("\n")}`,
-        );
       },
     );
 
@@ -1353,14 +1331,23 @@ Permission overrides: workspace_member_permissions per-member overrides`,
         board: z.string().describe("Board slug"),
       },
       async ({ workspace, board }) => {
-        const res = await query(
-          `UPDATE board SET "deletedAt" = NOW()
-         WHERE slug = $2 AND "workspaceId" = (SELECT id FROM workspace WHERE slug = $1 AND "deletedAt" IS NULL)
-         AND "deletedAt" IS NULL RETURNING name`,
+        const boardRes = await query(
+          `SELECT b."publicId", b.name FROM board b
+           JOIN workspace w ON b."workspaceId" = w.id
+           WHERE w.slug = $1 AND b.slug = $2 AND b."deletedAt" IS NULL LIMIT 1`,
           [workspace, board],
         );
-        if (res.rowCount === 0) return text(`Board "${board}" not found.`);
-        return text(`Deleted board **${res.rows[0].name}**.`);
+        if (boardRes.rows.length === 0)
+          return text(`Board "${board}" not found.`);
+        try {
+          const caller = await getRouterCaller();
+          await caller.board.delete({
+            boardPublicId: boardRes.rows[0].publicId,
+          });
+          return text(`Deleted board **${boardRes.rows[0].name}**.`);
+        } catch (err) {
+          return text(trpcErrorToText(err));
+        }
       },
     );
 
@@ -1374,25 +1361,18 @@ Permission overrides: workspace_member_permissions per-member overrides`,
         name: z.string().describe("Checklist name"),
       },
       async ({ cardId, name }) => {
-        const cardRes = await query(
-          `SELECT id FROM card WHERE "publicId" = $1 AND "deletedAt" IS NULL`,
-          [cardId],
-        );
-        if (cardRes.rows.length === 0)
-          return text(`Card "${cardId}" not found.`);
-        const cId = cardRes.rows[0].id;
-        const idxRes = await query(
-          `SELECT COALESCE(MAX(index), -1) + 1 AS next FROM card_checklist WHERE "cardId" = $1 AND "deletedAt" IS NULL`,
-          [cId],
-        );
-        const publicId = generatePublicId();
-        await query(
-          `INSERT INTO card_checklist ("publicId", name, index, "cardId", "createdAt", "updatedAt") VALUES ($1, $2, $3, $4, NOW(), NOW())`,
-          [publicId, name, idxRes.rows[0].next, cId],
-        );
-        return text(
-          `Created checklist **${name}** (${publicId}) on card ${cardId}.`,
-        );
+        try {
+          const caller = await getRouterCaller();
+          const result = await caller.checklist.create({
+            cardPublicId: cardId,
+            name,
+          });
+          return text(
+            `Created checklist **${result.name}** (${result.publicId}) on card ${cardId}.`,
+          );
+        } catch (err) {
+          return text(trpcErrorToText(err));
+        }
       },
     );
 
@@ -1404,23 +1384,16 @@ Permission overrides: workspace_member_permissions per-member overrides`,
         title: z.string().describe("Item title"),
       },
       async ({ checklistId, title }) => {
-        const clRes = await query(
-          `SELECT id FROM card_checklist WHERE "publicId" = $1 AND "deletedAt" IS NULL`,
-          [checklistId],
-        );
-        if (clRes.rows.length === 0)
-          return text(`Checklist "${checklistId}" not found.`);
-        const clId = clRes.rows[0].id;
-        const idxRes = await query(
-          `SELECT COALESCE(MAX(index), -1) + 1 AS next FROM card_checklist_item WHERE "checklistId" = $1 AND "deletedAt" IS NULL`,
-          [clId],
-        );
-        const publicId = generatePublicId();
-        await query(
-          `INSERT INTO card_checklist_item ("publicId", title, completed, index, "checklistId", "createdAt", "updatedAt") VALUES ($1, $2, false, $3, $4, NOW(), NOW())`,
-          [publicId, title, idxRes.rows[0].next, clId],
-        );
-        return text(`Added item **${title}** (${publicId}) to checklist.`);
+        try {
+          const caller = await getRouterCaller();
+          const item = await caller.checklist.createItem({
+            checklistPublicId: checklistId,
+            title,
+          });
+          return text(`Added item **${item.title}** (${item.publicId}) to checklist.`);
+        } catch (err) {
+          return text(trpcErrorToText(err));
+        }
       },
     );
 
@@ -1434,16 +1407,18 @@ Permission overrides: workspace_member_permissions per-member overrides`,
           .describe("true to complete, false to uncomplete"),
       },
       async ({ itemId, completed }) => {
-        const res = await query(
-          `UPDATE card_checklist_item SET completed = $1, "updatedAt" = NOW()
-         WHERE "publicId" = $2 AND "deletedAt" IS NULL RETURNING title`,
-          [completed, itemId],
-        );
-        if (res.rowCount === 0)
-          return text(`Checklist item "${itemId}" not found.`);
-        return text(
-          `${completed ? "✓" : "○"} **${res.rows[0].title}** marked as ${completed ? "completed" : "incomplete"}.`,
-        );
+        try {
+          const caller = await getRouterCaller();
+          const item = await caller.checklist.updateItem({
+            checklistItemPublicId: itemId,
+            completed,
+          });
+          return text(
+            `${completed ? "✓" : "○"} **${item.title}** marked as ${completed ? "completed" : "incomplete"}.`,
+          );
+        } catch (err) {
+          return text(trpcErrorToText(err));
+        }
       },
     );
 
@@ -1475,7 +1450,7 @@ Permission overrides: workspace_member_permissions per-member overrides`,
 
     server.tool(
       "assign_member",
-      "Assign a workspace member to a card.",
+      "Assign a workspace member to a card (no-op if already assigned).",
       {
         cardId: z.string().describe("Card publicId"),
         memberId: z
@@ -1485,55 +1460,41 @@ Permission overrides: workspace_member_permissions per-member overrides`,
           ),
       },
       async ({ cardId, memberId }) => {
-        const cardRes = await query(
-          `SELECT id FROM card WHERE "publicId" = $1 AND "deletedAt" IS NULL`,
-          [cardId],
-        );
-        if (cardRes.rows.length === 0)
-          return text(`Card "${cardId}" not found.`);
-        const cId = cardRes.rows[0].id;
-
         const memberRes = await query(
-          `SELECT wm.id, u.name FROM workspace_members wm
+          `SELECT u.name FROM workspace_members wm
            JOIN "user" u ON wm."userId" = u.id
            WHERE wm."publicId" = $1 AND wm."deletedAt" IS NULL`,
           [memberId],
         );
         if (memberRes.rows.length === 0)
           return text(`Member "${memberId}" not found.`);
-        const wmId = memberRes.rows[0].id;
         const memberName = memberRes.rows[0].name;
-
-        // Check if already assigned
-        const existing = await query(
-          `SELECT 1 FROM "_card_workspace_members" WHERE "cardId" = $1 AND "workspaceMemberId" = $2`,
-          [cId, wmId],
-        );
-        if (existing.rows.length > 0)
-          return text(
-            `**${memberName}** is already assigned to card ${cardId}.`,
-          );
-
-        await query(
-          `INSERT INTO "_card_workspace_members" ("cardId", "workspaceMemberId") VALUES ($1, $2)`,
-          [cId, wmId],
-        );
-
-        // Activity record
-        const actPubId = generatePublicId();
-        await query(
-          `INSERT INTO card_activity ("publicId", type, "cardId", "workspaceMemberId", "createdAt")
-           VALUES ($1, 'card.updated.member.added', $2, $3, NOW())`,
-          [actPubId, cId, wmId],
-        );
-
-        return text(`Assigned **${memberName}** to card ${cardId}.`);
+        try {
+          const caller = await getRouterCaller();
+          const result = await caller.card.addOrRemoveMember({
+            cardPublicId: cardId,
+            workspaceMemberPublicId: memberId,
+          });
+          if (!result.newMember) {
+            // Toggle removed an existing assignment — undo to leave assigned.
+            await caller.card.addOrRemoveMember({
+              cardPublicId: cardId,
+              workspaceMemberPublicId: memberId,
+            });
+            return text(
+              `**${memberName}** is already assigned to card ${cardId}.`,
+            );
+          }
+          return text(`Assigned **${memberName}** to card ${cardId}.`);
+        } catch (err) {
+          return text(trpcErrorToText(err));
+        }
       },
     );
 
     server.tool(
       "unassign_member",
-      "Remove a workspace member from a card.",
+      "Remove a workspace member from a card (no-op if not assigned).",
       {
         cardId: z.string().describe("Card publicId"),
         memberId: z
@@ -1543,43 +1504,35 @@ Permission overrides: workspace_member_permissions per-member overrides`,
           ),
       },
       async ({ cardId, memberId }) => {
-        const cardRes = await query(
-          `SELECT id FROM card WHERE "publicId" = $1 AND "deletedAt" IS NULL`,
-          [cardId],
-        );
-        if (cardRes.rows.length === 0)
-          return text(`Card "${cardId}" not found.`);
-        const cId = cardRes.rows[0].id;
-
         const memberRes = await query(
-          `SELECT wm.id, u.name FROM workspace_members wm
+          `SELECT u.name FROM workspace_members wm
            JOIN "user" u ON wm."userId" = u.id
            WHERE wm."publicId" = $1 AND wm."deletedAt" IS NULL`,
           [memberId],
         );
         if (memberRes.rows.length === 0)
           return text(`Member "${memberId}" not found.`);
-        const wmId = memberRes.rows[0].id;
         const memberName = memberRes.rows[0].name;
-
-        const del = await query(
-          `DELETE FROM "_card_workspace_members" WHERE "cardId" = $1 AND "workspaceMemberId" = $2`,
-          [cId, wmId],
-        );
-        if (del.rowCount === 0)
-          return text(
-            `**${memberName}** is not assigned to card ${cardId}.`,
-          );
-
-        // Activity record
-        const actPubId = generatePublicId();
-        await query(
-          `INSERT INTO card_activity ("publicId", type, "cardId", "workspaceMemberId", "createdAt")
-           VALUES ($1, 'card.updated.member.removed', $2, $3, NOW())`,
-          [actPubId, cId, wmId],
-        );
-
-        return text(`Removed **${memberName}** from card ${cardId}.`);
+        try {
+          const caller = await getRouterCaller();
+          const result = await caller.card.addOrRemoveMember({
+            cardPublicId: cardId,
+            workspaceMemberPublicId: memberId,
+          });
+          if (result.newMember) {
+            // Toggle added an assignment that wasn't there — undo to leave unassigned.
+            await caller.card.addOrRemoveMember({
+              cardPublicId: cardId,
+              workspaceMemberPublicId: memberId,
+            });
+            return text(
+              `**${memberName}** is not assigned to card ${cardId}.`,
+            );
+          }
+          return text(`Removed **${memberName}** from card ${cardId}.`);
+        } catch (err) {
+          return text(trpcErrorToText(err));
+        }
       },
     );
 
@@ -1597,39 +1550,35 @@ Permission overrides: workspace_member_permissions per-member overrides`,
       },
       async ({ cardId, parentId }) => {
         const cardRes = await query(
-          `SELECT id, title FROM card WHERE "publicId" = $1 AND "deletedAt" IS NULL`,
+          `SELECT title FROM card WHERE "publicId" = $1 AND "deletedAt" IS NULL`,
           [cardId],
         );
         if (cardRes.rows.length === 0) return text(`Card "${cardId}" not found.`);
-        const card = cardRes.rows[0];
+        const cardTitle = cardRes.rows[0].title;
 
-        if (parentId === null) {
-          await query(
-            `UPDATE card SET "parentId" = NULL, "updatedAt" = NOW() WHERE id = $1`,
-            [card.id],
+        let parentTitle: string | null = null;
+        if (parentId !== null) {
+          const parentRes = await query(
+            `SELECT title FROM card WHERE "publicId" = $1 AND "deletedAt" IS NULL`,
+            [parentId],
           );
-          return text(`Removed parent from card **${card.title}**.`);
+          if (parentRes.rows.length === 0)
+            return text(`Parent card "${parentId}" not found.`);
+          parentTitle = parentRes.rows[0].title;
         }
 
-        const parentRes = await query(
-          `SELECT id, title FROM card WHERE "publicId" = $1 AND "deletedAt" IS NULL`,
-          [parentId],
-        );
-        if (parentRes.rows.length === 0)
-          return text(`Parent card "${parentId}" not found.`);
-        const parent = parentRes.rows[0];
-
-        if (parent.id === card.id)
-          return text("A card cannot be its own parent.");
-
-        await query(
-          `UPDATE card SET "parentId" = $1, "updatedAt" = NOW() WHERE id = $2`,
-          [parent.id, card.id],
-        );
-
-        return text(
-          `Set **${parent.title}** as parent of **${card.title}**.`,
-        );
+        try {
+          const caller = await getRouterCaller();
+          await caller.card.setParent({
+            cardPublicId: cardId,
+            parentPublicId: parentId,
+          });
+          if (parentId === null)
+            return text(`Removed parent from card **${cardTitle}**.`);
+          return text(`Set **${parentTitle}** as parent of **${cardTitle}**.`);
+        } catch (err) {
+          return text(trpcErrorToText(err));
+        }
       },
     );
 
